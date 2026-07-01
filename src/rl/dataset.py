@@ -3,7 +3,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 from typing import Optional, List
-from src.config import LAB_FEATURES, VITAL_FEATURES
+from src.config import LAB_FEATURES, VITAL_FEATURES, auto_feature_cols
 
 
 def _all_feature_cols() -> list:
@@ -11,9 +11,15 @@ def _all_feature_cols() -> list:
 
 
 def _state_columns(df: pl.DataFrame) -> List[str]:
-    all_feats = _all_feature_cols()
-    z_cols = [f"{c}_z" for c in all_feats if f"{c}_z" in df.columns]
-    all_missing = [f"{c}_missing" for c in all_feats if f"{c}_missing" in df.columns]
+    """Auto-detect state columns from whatever features are present."""
+    feat_cols = _all_feature_cols()
+    has_config = any(f in df.columns for f in feat_cols)
+    if not has_config:
+        feat_cols = auto_feature_cols(df)
+    z_cols = [f"{c}_z" for c in feat_cols if f"{c}_z" in df.columns]
+    if not z_cols:
+        z_cols = []
+    all_missing = [f"{c}_missing" for c in feat_cols if f"{c}_missing" in df.columns]
     demo = []
     for c in ["anchor_age", "gender_male", "time_sin", "time_cos"]:
         if c in df.columns:

@@ -19,6 +19,16 @@ def _all_feature_cols() -> list:
     return list(LAB_FEATURES.keys()) + list(VITAL_FEATURES.keys())
 
 
+def _data_feature_cols(df: pl.DataFrame) -> list:
+    """Auto-detect feature columns from data when config has none."""
+    from src.config import auto_feature_cols
+    cfg = list(LAB_FEATURES.keys()) + list(VITAL_FEATURES.keys())
+    existing = [c for c in cfg if c in df.columns]
+    if existing:
+        return existing
+    return auto_feature_cols(df)
+
+
 def compute_transferrin_sat(df: pl.DataFrame) -> pl.DataFrame:
     if "serum_iron" in df.columns and "tibc" in df.columns:
         df = df.with_columns(
@@ -28,7 +38,7 @@ def compute_transferrin_sat(df: pl.DataFrame) -> pl.DataFrame:
 
 
 def locf(df: pl.DataFrame, max_gap_bins: int = LOCF_MAX_GAP_HOURS // BIN_HOURS) -> pl.DataFrame:
-    feat_cols = [c for c in df.columns if c in _all_feature_cols()]
+    feat_cols = _data_feature_cols(df)
     sorted_df = df.sort(["hadm_id", "bin_idx"])
     for c in feat_cols:
         measured_bin = pl.when(pl.col(c).is_not_null()).then(pl.col("bin_idx")).otherwise(None)
@@ -54,7 +64,7 @@ def locf(df: pl.DataFrame, max_gap_bins: int = LOCF_MAX_GAP_HOURS // BIN_HOURS) 
 
 
 def compute_missingness_mask(df: pl.DataFrame) -> pl.DataFrame:
-    feat_cols = [c for c in df.columns if c in _all_feature_cols()]
+    feat_cols = _data_feature_cols(df)
     return df.with_columns(
         [pl.col(c).is_null().cast(pl.Int8).alias(f"{c}_missing") for c in feat_cols]
     )
@@ -62,6 +72,8 @@ def compute_missingness_mask(df: pl.DataFrame) -> pl.DataFrame:
 
 def compute_lab_deviation(df: pl.DataFrame) -> pl.DataFrame:
     all_features = {**LAB_FEATURES, **VITAL_FEATURES}
+    if not all_features:
+        return df.with_columns(pl.lit(0.0).alias("lab_deviation"))
     dev_cols = []
     for name, cfg in all_features.items():
         if name not in df.columns:
@@ -77,7 +89,6 @@ def compute_lab_deviation(df: pl.DataFrame) -> pl.DataFrame:
 
     df = df.with_columns(dev_cols)
     dev_names = [c for c in df.columns if c.startswith("_dev_")]
-    # ponytail: cap deviation at 10 per-feature to limit outlier influence
     capped = sum(pl.col(c).clip(0, 10) for c in dev_names)
     df = df.with_columns(capped.alias("lab_deviation"))
     return df.drop(dev_names)
@@ -102,9 +113,13 @@ def compute_rewards(
     std_los = pl.col("los_days").std()
     los_norm = (pl.col("los_days") - mean_los) / (std_los + 1e-8)
 
-    trajectory = trajectory.with_columns(
-        (-w["w3"] * pl.col("lab_deviation")).alias("per_bin_reward")
-    )
+    has_lab_dev = "lab_deviation" in trajectory.columns
+    if has_lab_dev:
+        trajectory = trajectory.with_columns(
+            (-w["w3"] * pl.col("lab_deviation")).alias("per_bin_reward")
+        )
+    else:
+        trajectory = trajectory.with_columns(pl.lit(0.0).alias("per_bin_reward"))
 
     max_bin = trajectory.group_by("hadm_id").agg(pl.col("bin_idx").max().alias("max_bin"))
     trajectory = trajectory.join(max_bin, on="hadm_id", how="left")
@@ -141,6 +156,9 @@ def build_trajectories(
     cohort = load_cohort(cohort_path)
     labs = load_labs(labs_path)
     actions = load_actions(actions_path)
+
+    feat_cols = list(LAB_FEATURES.keys()) + list(VITAL_FEATURES.keys())
+    has_config_feats = any(c in labs.columns for c in feat_cols)
 
     wide = compute_transferrin_sat(labs)
     wide = locf(wide)

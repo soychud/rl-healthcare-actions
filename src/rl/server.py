@@ -19,8 +19,8 @@ _action_names = {k: v["name"] for k, v in ACTION_BUNDLES.items()}
 
 
 class PredictRequest(BaseModel):
-    state: List[float] = Field(..., description="State vector (64 floats)")
-    safety_labs: Optional[List[float]] = Field(None, description="Lab values for safety masking, same order as lab_names")
+    state: List[float] = Field(..., description="State vector")
+    safety_labs: Optional[List[float]] = Field(None, description="Lab values for safety masking")
     lab_names: Optional[List[str]] = Field(None, description="Lab feature names matching SAFETY_CONSTRAINTS")
     hadm_id: Optional[int] = Field(None, description="Admission ID for diagnosis-based safety checks")
 
@@ -55,24 +55,29 @@ def get_ensemble() -> InferenceEnsemble:
 
 @app.on_event("startup")
 def _startup():
-    pass  # models lazy-loaded via /load
+    pass
 
 
 @app.get("/health")
 def health():
+    global _ensemble
     loaded = _ensemble is not None
-    return {"status": "ok", "model_loaded": loaded, "n_actions": N_ACTIONS}
+    n_act = _ensemble.n_actions if _ensemble is not None else N_ACTIONS
+    return {"status": "ok", "model_loaded": loaded, "n_actions": n_act}
 
 
 @app.get("/actions")
 def list_actions():
+    global _action_names
     return {"actions": _action_names}
 
 
 @app.post("/load")
 def load_model(model_dir: str = "data/models", seeds: Optional[List[int]] = None, state_dim: int = 64):
-    global _ensemble
+    global _ensemble, _action_names
     _ensemble = InferenceEnsemble(state_dim=state_dim, model_dir=model_dir, seeds=seeds or [0, 1, 2, 3, 42])
+    n_act = _ensemble.n_actions
+    _action_names = {k: v["name"] for k, v in ACTION_BUNDLES.items()} if ACTION_BUNDLES else {i: f"action_{i}" for i in range(n_act)}
     return {"status": "loaded", "n_ensemble": _ensemble.n_ensemble, "state_dim": state_dim}
 
 
@@ -86,7 +91,7 @@ def predict(req: PredictRequest):
         labs_arr = np.array(req.safety_labs).reshape(1, -1)
         hadm_arr = np.array([req.hadm_id]) if req.hadm_id is not None else None
         safety_mask = build_safety_mask(
-            n_rows=1, n_actions=N_ACTIONS,
+            n_rows=1, n_actions=ens.n_actions,
             labs=labs_arr, lab_names=req.lab_names,
             hadm_ids=hadm_arr,
         )
@@ -115,7 +120,7 @@ def predict_batch(req: BatchPredictRequest):
         labs_arr = np.array(req.safety_labs).reshape(n, -1)
         hadm_arr = np.array(req.hadm_ids) if req.hadm_ids else None
         safety_mask = build_safety_mask(
-            n_rows=n, n_actions=N_ACTIONS,
+            n_rows=n, n_actions=ens.n_actions,
             labs=labs_arr, lab_names=req.lab_names,
             hadm_ids=hadm_arr,
         )
@@ -148,6 +153,7 @@ if __name__ == "__main__":
 
     if args.preload:
         _ensemble = InferenceEnsemble(state_dim=args.state_dim, model_dir=args.model_dir, seeds=args.seeds)
+        _action_names = {k: v["name"] for k, v in ACTION_BUNDLES.items()} if ACTION_BUNDLES else {i: f"action_{i}" for i in range(_ensemble.n_actions)}
         print(f"Model loaded: {_ensemble.n_ensemble} ensemble members")
 
     uvicorn.run(app, host=args.host, port=args.port)

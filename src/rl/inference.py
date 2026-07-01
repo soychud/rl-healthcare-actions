@@ -10,7 +10,6 @@ from src.config import N_ACTIONS, ACTION_BUNDLES, SAFETY_CONSTRAINTS
 
 
 def _load_q_v(state_dim, n_actions, model_dir, prefix, seed, device):
-    """Load Q/V network pair, detecting architecture from checkpoint keys."""
     from src.rl.train import LSTMModel
     model_dir = Path(model_dir)
     q_path = model_dir / f"{prefix}_q_seed{seed}.pt"
@@ -36,9 +35,6 @@ def _load_q_v(state_dim, n_actions, model_dir, prefix, seed, device):
 
 
 class InferenceEnsemble:
-    """Load multiple IQL seeds as an ensemble. Prediction = mean across seeds,
-    bootstrap percentile CIs for per-action confidence."""
-
     def __init__(
         self,
         state_dim: int,
@@ -68,7 +64,6 @@ class InferenceEnsemble:
 
     @torch.no_grad()
     def predict(self, states: torch.Tensor) -> Dict[str, np.ndarray]:
-        """Returns {pi, q_values, v_values, q_std, confidence, advantages, q_ci_lower, q_ci_upper}."""
         states = states.to(self.device)
         batch_size = states.shape[0]
         all_q = torch.zeros(self.n_ensemble, batch_size, self.n_actions, device=self.device)
@@ -83,7 +78,6 @@ class InferenceEnsemble:
         adv = q_mean - v_mean
         pi = F.softmax(adv / 0.1, dim=-1)
 
-        # bootstrap percentile CIs (ensemble members as bootstrap samples)
         q_sorted = all_q.sort(dim=0).values
         n = self.n_ensemble
         lo_idx = max(0, int(n * 0.025))
@@ -91,7 +85,6 @@ class InferenceEnsemble:
         q_ci_lower = q_sorted[lo_idx]
         q_ci_upper = q_sorted[hi_idx]
 
-        # per-action confidence: 1 - (ci_width / |q_mean|+1e-8), clipped to [0,1]
         ci_width = (q_ci_upper - q_ci_lower) / 2.0
         conf = 1.0 - torch.clamp(ci_width / (q_mean.abs() + 1e-8), 0, 1)
         conf = conf / (conf.sum(dim=-1, keepdim=True) + 1e-8)
@@ -129,21 +122,13 @@ def build_safety_mask(
     diagnoses_hadm: Optional[set] = None,
     hadm_ids: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """Build boolean safety mask: True = action allowed.
+    if not SAFETY_CONSTRAINTS:
+        return np.ones((n_rows, n_actions), dtype=bool)
 
-    Args:
-        n_rows: number of patient states
-        n_actions: total action count
-        labs: (n_rows, n_features) array of lab values in original units
-        lab_names: feature column names corresponding to labs
-        diagnoses_hadm: set of hadm_ids with malignancy
-        hadm_ids: array of hadm_ids for each row
-    """
     mask = np.ones((n_rows, n_actions), dtype=bool)
 
     if lab_names is not None and labs is not None:
         lab_index = {name: i for i, name in enumerate(lab_names)}
-
         for c in SAFETY_CONSTRAINTS:
             aid = c.get("action")
             lab = c.get("lab")
@@ -164,11 +149,11 @@ def build_safety_mask(
                 continue
             mask[unsafe, aid] = False
 
-    # S1: No ESA with malignancy
     if diagnoses_hadm is not None and hadm_ids is not None and 5 < n_actions:
-        for i, hid in enumerate(hadm_ids):
-            if hid in diagnoses_hadm:
-                mask[i, 5] = False
+        if any(c.get("id") == "S1" for c in SAFETY_CONSTRAINTS):
+            for i, hid in enumerate(hadm_ids):
+                if hid in diagnoses_hadm:
+                    mask[i, 5] = False
 
     return mask
 
@@ -180,7 +165,6 @@ def batch_inference(
     safety_mask: Optional[np.ndarray] = None,
     verbose: bool = True,
 ) -> Dict[str, np.ndarray]:
-    """Score millions of states in batches. Returns stacked predictions."""
     n = state_vectors.shape[0]
     keys = ["pi", "q_values", "q_std", "v_values", "advantages", "confidence"]
     accum: Dict[str, list] = {k: [] for k in keys}
@@ -211,7 +195,6 @@ def export_results(
     action_names: Optional[Dict[int, str]] = None,
     format: str = "parquet",
 ):
-    """Export inference results to parquet or CSV."""
     import polars as pl
 
     anames = action_names or {k: v["name"] for k, v in ACTION_BUNDLES.items()}
@@ -222,7 +205,7 @@ def export_results(
     if patient_ids is not None:
         data["patient_id"] = patient_ids
     data["recommended_action_id"] = results["recommended_action"]
-    data["recommended_action"] = [anames.get(int(a), str(a)) for a in results["recommended_action"]]
+    data["recommended_action"] = [anames.get(int(a), f"action_{a}") for a in results["recommended_action"]]
     data["confidence_score"] = results["confidence_score"]
     data["state_value"] = results["v_values"].squeeze()
 
@@ -232,7 +215,6 @@ def export_results(
         data[f"conf_{name}"] = results["confidence"][:, a]
 
     df = pl.DataFrame(data)
-
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     if format == "parquet":

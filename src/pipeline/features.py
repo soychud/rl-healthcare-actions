@@ -4,7 +4,7 @@ import polars as pl
 import numpy as np
 from pathlib import Path
 from typing import Optional, Dict, Tuple
-from src.config import LAB_FEATURES, VITAL_FEATURES, N_ACTIONS, BIN_HOURS
+from src.config import LAB_FEATURES, VITAL_FEATURES, N_ACTIONS, BIN_HOURS, auto_feature_cols, auto_action_ids
 
 LAB_COLS = list(LAB_FEATURES.keys())
 VITAL_COLS = list(VITAL_FEATURES.keys())
@@ -21,10 +21,11 @@ def join_demographics(traj: pl.DataFrame, cohort: pl.DataFrame) -> pl.DataFrame:
 
 
 def zscore_features(traj: pl.DataFrame, train_ids: set) -> Tuple[pl.DataFrame, Dict]:
-    """Z-score both lab and vital features using train-set statistics only."""
+    """Z-score features using train-set statistics only."""
+    feat_cols = ALL_FEAT_COLS if any(c in traj.columns for c in ALL_FEAT_COLS) else auto_feature_cols(traj)
     train = traj.filter(pl.col("subject_id").is_in(list(train_ids)))
     stats = {}
-    for c in ALL_FEAT_COLS:
+    for c in feat_cols:
         if c not in train.columns:
             continue
         s = train[c]
@@ -34,7 +35,7 @@ def zscore_features(traj: pl.DataFrame, train_ids: set) -> Tuple[pl.DataFrame, D
             sd = 1.0
         stats[c] = {"mean": m, "std": sd}
     exprs = []
-    for c in ALL_FEAT_COLS:
+    for c in feat_cols:
         if c not in stats:
             continue
         exprs.append(
@@ -52,28 +53,36 @@ def encode_time(traj: pl.DataFrame) -> pl.DataFrame:
 
 
 def compute_trend_deltas(traj: pl.DataFrame, n: int = 3) -> pl.DataFrame:
-    """Compute trend deltas for key labs and vitals."""
-    key_features = [
-        "hemoglobin", "platelets", "pt", "inr",
-        "heart_rate", "mean_bp", "spo2", "creatinine", "glucose",
-    ]
-    for feat in key_features:
-        col = f"{feat}_z" if f"{feat}_z" in traj.columns else feat
+    """Compute trend deltas for all z-scored features."""
+    z_cols = [c for c in traj.columns if c.endswith("_z")]
+    if not z_cols:
+        feat_cols = [c for c in traj.columns if c in ALL_FEAT_COLS] or auto_feature_cols(traj)
+        for feat in feat_cols[:9]:
+            if feat not in traj.columns:
+                continue
+            for lag in range(1, n + 1):
+                delta = pl.col(feat) - pl.col(feat).shift(lag).over("hadm_id")
+                traj = traj.with_columns(delta.alias(f"delta_{feat}_{lag}"))
+        return traj
+    for col in z_cols[:9]:
         if col not in traj.columns:
             continue
         for lag in range(1, n + 1):
             delta = pl.col(col) - pl.col(col).shift(lag).over("hadm_id")
-            traj = traj.with_columns(delta.alias(f"delta_{feat}_{lag}"))
+            traj = traj.with_columns(delta.alias(f"delta_{col}_{lag}"))
     return traj
 
 
-def build_state_vector(traj: pl.DataFrame) -> Tuple[pl.DataFrame, list]:
-    z_cols = [f"{c}_z" for c in ALL_FEAT_COLS if f"{c}_z" in traj.columns]
-    demo = ["anchor_age"]
-    time_enc = ["time_sin", "time_cos"]
+def build_state_vector(traj: pl.DataFrame, feat_cols: Optional[list] = None) -> Tuple[pl.DataFrame, list]:
+    if feat_cols is None:
+        feat_cols = ALL_FEAT_COLS if any(c in traj.columns for c in ALL_FEAT_COLS) else auto_feature_cols(traj)
+    z_cols = [f"{c}_z" for c in feat_cols if f"{c}_z" in traj.columns]
+    missing_cols = [f"{c}_missing" for c in feat_cols if f"{c}_missing" in traj.columns]
+    demo = ["anchor_age"] if "anchor_age" in traj.columns else []
+    time_enc = ["time_sin", "time_cos"] if "time_sin" in traj.columns else []
     gender_col = ["gender_male"] if "gender_male" in traj.columns else []
-    delta_cols = [c for c in traj.columns if c.startswith("delta_")]
-    state_cols = z_cols + MISSING_COLS + demo + time_enc + gender_col + delta_cols
+    delta_cols = sorted(c for c in traj.columns if c.startswith("delta_"))
+    state_cols = z_cols + missing_cols + demo + time_enc + gender_col + delta_cols
     return traj, state_cols
 
 
@@ -89,6 +98,8 @@ def split_by_subject(
 
     def _split(ids_df):
         ids = ids_df["subject_id"].to_list()
+        if not ids:
+            return set(), set(), set()
         idx = rng.permutation(len(ids))
         n = len(ids)
         n_train = int(n * 0.70)
@@ -115,20 +126,22 @@ def split_by_subject(
 
 
 def compute_behavior_policy(traj: pl.DataFrame) -> pl.DataFrame:
-    """Compute behavior policy over N_ACTIONS categories (0 through N_ACTIONS-1)."""
-    counts = traj.group_by("action_id").agg(pl.len().alias("count"))
+    """Compute behavior policy over action IDs."""
+    actions = traj.group_by("action_id").agg(pl.len().alias("count"))
     total = traj.height
-    # Ensure all action IDs 0..N_ACTIONS-1 are present
-    all_actions = pl.DataFrame({"action_id": list(range(N_ACTIONS))})
-    counts = all_actions.join(counts, on="action_id", how="left").with_columns(
+    all_action_ids = list(range(N_ACTIONS)) if N_ACTIONS < 100 else sorted(traj["action_id"].unique().to_list())
+    all_actions = pl.DataFrame({"action_id": all_action_ids})
+    actions = all_actions.join(actions, on="action_id", how="left").with_columns(
         pl.col("count").fill_null(0)
     )
-    return counts.with_columns(
+    return actions.with_columns(
         (pl.col("count") / total).alias("pi_beta")
     ).sort("action_id")
 
 
 def compute_behavior_policy_binned(traj: pl.DataFrame, n_bins: int = 10) -> pl.DataFrame:
+    if "hemoglobin" not in traj.columns:
+        return pl.DataFrame(schema={"action_id": pl.Int32, "pi_beta": pl.Float64})
     traj = traj.with_columns(
         (pl.col("hemoglobin") * n_bins / 20.0).floor().cast(pl.Int32).alias("hgb_bin")
     )
@@ -150,13 +163,21 @@ def build_dataset(
     traj = pl.read_parquet(traj_path)
     cohort = load_cohort(cohort_path)
 
+    # Determine feature columns from data
+    global ALL_FEAT_COLS, MISSING_COLS
+    has_config_feats = any(c in traj.columns for c in LAB_FEATURES)
+    if not has_config_feats and not any(c in traj.columns for c in ALL_FEAT_COLS):
+        ALL_FEAT_COLS = auto_feature_cols(traj)
+
     traj = join_demographics(traj, cohort)
-    traj = traj.with_columns(
-        (pl.col("gender") == "M").cast(pl.Int8).alias("gender_male")
-    )
-    traj = traj.join(
-        cohort.select("hadm_id", "hospital_expire_flag"), on="hadm_id", how="left"
-    )
+    if "gender" in traj.columns:
+        traj = traj.with_columns(
+            (pl.col("gender") == "M").cast(pl.Int8).alias("gender_male")
+        )
+    if "hospital_expire_flag" not in traj.columns:
+        traj = traj.join(
+            cohort.select("hadm_id", "hospital_expire_flag"), on="hadm_id", how="left"
+        )
 
     _, _, _, split_meta = split_by_subject(traj, seed)
     train_ids = split_meta["train_ids"]
@@ -189,7 +210,7 @@ def build_dataset(
     np.save(str(out / "val_subjects.npy"), np.array(sorted(split_meta["val_ids"])))
     np.save(str(out / "test_subjects.npy"), np.array(sorted(split_meta["test_ids"])))
 
-    _, state_cols = build_state_vector(train)
+    _, state_cols = build_state_vector(traj, feat_cols=ALL_FEAT_COLS)
 
     return {
         "train": train.height,
@@ -210,10 +231,7 @@ def batch_transform(
     chunk_size: int = 100_000,
     **kwargs,
 ):
-    """Process a large parquet file in chunks with a transform function.
-
-    transform_fn(df_chunk: pl.DataFrame, **kwargs) -> pl.DataFrame
-    """
+    """Process a large parquet file in chunks with a transform function."""
     import polars as pl
     from pathlib import Path
 

@@ -14,6 +14,7 @@ def main():
     parser = argparse.ArgumentParser(description="RL Healthcare Actions — training and evaluation")
     parser.add_argument("--data-dir", default=None, help="Data directory (overrides $RL_DATA_DIR)")
     parser.add_argument("--mimic-dir", default=None, help="MIMIC data directory (overrides $MIMIC_DATA_DIR)")
+    parser.add_argument("--config", default=None, help="Config JSON path (overrides $RL_CONFIG)")
     parser.add_argument("--device", default=None, help="Device override")
 
     sub = parser.add_subparsers(dest="command", required=True)
@@ -75,6 +76,8 @@ def main():
         os.environ["RL_DATA_DIR"] = args.data_dir
     if args.mimic_dir:
         os.environ["MIMIC_DATA_DIR"] = args.mimic_dir
+    if args.config:
+        os.environ["RL_CONFIG"] = args.config
 
     if args.command == "cohort":
         from src.cohort.extract import extract_cohort
@@ -123,6 +126,7 @@ def main():
     elif args.command == "train":
         from src.rl.train import train_iql, train_bc, auto_device, save_history
         import torch
+        from src.config import N_ACTIONS
         data_dir = os.environ.get("RL_DATA_DIR", "data")
         out = Path(f"{data_dir}/models")
         out.mkdir(parents=True, exist_ok=True)
@@ -134,7 +138,7 @@ def main():
             arch_kwargs["hidden_sizes"] = args.hidden_sizes
 
         for seed in args.seeds:
-            print(f"\n=== Training IQL (seed={seed}, arch={args.arch}) ===")
+            print(f"\n=== Training IQL (seed={seed}, arch={args.arch}, n_actions={N_ACTIONS}) ===")
             result = train_iql(f"{data_dir}/dataset_v1/train.parquet", f"{data_dir}/dataset_v1/val.parquet",
                                epochs=args.epochs, seed=seed, device=device, batch_size=args.batch_size,
                                **arch_kwargs)
@@ -164,7 +168,6 @@ def main():
         model_dir = args.model_dir or os.environ.get("RL_DATA_DIR", "data") + "/models"
         output = args.output
 
-        # load input data
         inp = Path(args.input)
         if inp.suffix == ".csv":
             df = pl.read_csv(str(inp))
@@ -172,8 +175,8 @@ def main():
             df = pl.read_parquet(str(inp))
 
         print(f"Loaded {df.height:,} rows from {args.input}")
+        n_actions_infer = N_ACTIONS
 
-        # determine state columns
         if args.state_cols:
             state_cols = args.state_cols
         else:
@@ -187,11 +190,9 @@ def main():
 
         states_np = df.select(state_cols).fill_null(0.0).to_numpy().astype(np.float32)
 
-        # load ensemble
         state_dim = states_np.shape[1]
-        ensemble = InferenceEnsemble(state_dim=state_dim, model_dir=model_dir, seeds=args.seeds)
+        ensemble = InferenceEnsemble(state_dim=state_dim, n_actions=n_actions_infer, model_dir=model_dir, seeds=args.seeds)
 
-        # safety mask
         safety_mask = None
         if args.safety:
             lab_cols = args.lab_cols or [c for c in df.columns if c != "hadm_id"]
@@ -199,20 +200,18 @@ def main():
             hadm_ids = df["hadm_id"].to_numpy() if "hadm_id" in df.columns else None
             diagnoses_hadm = set()
             safety_mask = build_safety_mask(
-                n_rows=df.height, n_actions=N_ACTIONS,
+                n_rows=df.height, n_actions=n_actions_infer,
                 labs=labs_np, lab_names=lab_cols if lab_cols else None,
                 diagnoses_hadm=diagnoses_hadm, hadm_ids=hadm_ids,
             )
             print("Safety constraints applied")
 
-        # run inference
         results = batch_inference(
             states_np, ensemble,
             batch_size=args.batch_size,
             safety_mask=safety_mask,
         )
 
-        # export
         patient_ids = df[args.patient_id_col].to_numpy() if args.patient_id_col and args.patient_id_col in df.columns else None
         export_results(results, output, patient_ids=patient_ids, format=args.format)
 
@@ -220,7 +219,7 @@ def main():
         action_names = {k: v["name"] for k, v in ACTION_BUNDLES.items()}
         unique, counts = np.unique(results["recommended_action"], return_counts=True)
         for a, c in sorted(zip(unique, counts)):
-            print(f"    {action_names.get(int(a), str(a))}: {c:,} ({100*c/len(results['recommended_action']):.1f}%)")
+            print(f"    {action_names.get(int(a), f'action_{int(a)}')}: {c:,} ({100*c/len(results['recommended_action']):.1f}%)")
     elif args.command == "serve":
         model_dir = args.model_dir or os.environ.get("RL_DATA_DIR", "data") + "/models"
         sys.path.insert(0, str(Path(__file__).resolve().parent))
