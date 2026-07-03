@@ -11,6 +11,7 @@ from src.rl.train import ARCHITECTURES
 
 
 def main():
+    import pathlib
     parser = argparse.ArgumentParser(description="RL Healthcare Actions — training and evaluation")
     parser.add_argument("--data-dir", default=None, help="Data directory (overrides $RL_DATA_DIR)")
     parser.add_argument("--mimic-dir", default=None, help="MIMIC data directory (overrides $MIMIC_DATA_DIR)")
@@ -84,20 +85,17 @@ def main():
 
     if args.command == "cohort":
         from src.cohort.extract import extract_cohort
-        from pathlib import Path
-        out = Path(os.environ.get("RL_DATA_DIR", "data"))
+        out = pathlib.Path(os.environ.get("RL_DATA_DIR", "data"))
         out.mkdir(exist_ok=True)
         cohort = extract_cohort()
         cohort.write_parquet(out / "cohort.parquet")
         cohort.write_csv(out / "cohort.csv")
         print(f"Cohort: {cohort.height} admissions, mortality={cohort['hospital_expire_flag'].sum()}")
-
     if hasattr(args, 'data') and args.data:
         os.environ["RL_DATA_PATH"] = args.data
     elif args.command == "labs":
         from src.extract.labs import extract_labs, extract_vitals_from_chartevents, pivot_and_bin
-        from pathlib import Path
-        out = Path(os.environ.get("RL_DATA_DIR", "data"))
+        out = pathlib.Path(os.environ.get("RL_DATA_DIR", "data"))
         out.mkdir(exist_ok=True)
         cohort = pl.read_parquet(out / "cohort.parquet")
         hadm_ids = set(cohort["hadm_id"].to_list())
@@ -110,8 +108,7 @@ def main():
         print(f"Labs binned: {binned.height:,} rows, {binned['hadm_id'].n_unique()} admissions")
     elif args.command == "actions":
         from src.extract.actions import extract_all_actions
-        from pathlib import Path
-        out = Path(os.environ.get("RL_DATA_DIR", "data"))
+        out = pathlib.Path(os.environ.get("RL_DATA_DIR", "data"))
         out.mkdir(exist_ok=True)
         import polars as pl
         cohort = pl.read_parquet(out / "cohort.parquet")
@@ -131,6 +128,7 @@ def main():
             if k != "zstats":
                 print(f"  {k}: {v}")
     elif args.command == "train":
+        import pathlib
         from src.rl.train import train_iql, train_bc, auto_device, save_history
         import torch
         from src.config import N_ACTIONS
@@ -139,7 +137,7 @@ def main():
             os.environ["RL_DATA_PATH"] = args.data
             from src.pipeline.features import build_dataset
             build_dataset(traj_path=args.data, seed=42)
-        out = Path(f"{data_dir}/models")
+        out = pathlib.Path(f"{data_dir}/models")
         out.mkdir(parents=True, exist_ok=True)
         device = args.device or auto_device()
         print(f"Device: {device} | Seeds: {args.seeds}")
@@ -179,7 +177,7 @@ def main():
         model_dir = args.model_dir or os.environ.get("RL_DATA_DIR", "data") + "/models"
         output = args.output
 
-        inp = Path(args.input)
+        inp = pathlib.Path(args.input)
         if inp.suffix == ".csv":
             df = pl.read_csv(str(inp))
         else:
@@ -233,7 +231,7 @@ def main():
             print(f"    {action_names.get(int(a), f'action_{int(a)}')}: {c:,} ({100*c/len(results['recommended_action']):.1f}%)")
     elif args.command == "serve":
         model_dir = args.model_dir or os.environ.get("RL_DATA_DIR", "data") + "/models"
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
         from src.rl.server import app, _ensemble, InferenceEnsemble
         import uvicorn
         if args.preload:

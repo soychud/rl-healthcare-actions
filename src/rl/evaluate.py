@@ -28,11 +28,32 @@ def _get_state_dim() -> int:
     return ds.state_dim
 
 
+def _infer_arch_from_checkpoint(path, state_dim, n_actions, device):
+    chk = torch.load(str(path), map_location=device, weights_only=True)
+    keys = list(chk.keys())
+    has_lstm = any("lstm" in k for k in keys)
+    if has_lstm:
+        return IQL(state_dim=state_dim, n_actions=n_actions, device=device, arch="lstm")
+
+    # Collect hidden sizes from all Linear weight keys except the last (output) layer
+    weight_keys = [k for k in keys if k.endswith(".weight")]
+    last_weight = weight_keys[-1] if weight_keys else None
+    hidden_sizes = []
+    for k in weight_keys:
+        if k == last_weight:
+            continue
+        hidden_sizes.append(chk[k].shape[0])
+
+    hs = hidden_sizes or [256, 256]
+    return IQL(state_dim=state_dim, n_actions=n_actions, device=device, arch="mlp", hidden_sizes=hs)
+
+
 def _load_best_iql(device: Optional[str] = None, prefix: str = "iql", seed: int = 42):
     device = device or auto_device()
     state_dim = _get_state_dim()
-    m = IQL(state_dim=state_dim, n_actions=N_ACTIONS, device=device)
-    m.q_net.load_state_dict(torch.load(str(MODEL_DIR / f"{prefix}_q_seed{seed}.pt"), map_location=device, weights_only=True))
+    q_path = MODEL_DIR / f"{prefix}_q_seed{seed}.pt"
+    m = _infer_arch_from_checkpoint(q_path, state_dim, N_ACTIONS, device)
+    m.q_net.load_state_dict(torch.load(str(q_path), map_location=device, weights_only=True))
     m.v_net.load_state_dict(torch.load(str(MODEL_DIR / f"{prefix}_v_seed{seed}.pt"), map_location=device, weights_only=True))
     return m
 
