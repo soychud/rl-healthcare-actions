@@ -381,7 +381,7 @@ def phenotype_stratification(device: Optional[str] = None) -> Dict:
         pl.col("icd_code").cast(pl.Utf8).str.slice(0, 3).alias("icd_group")
     )
 
-    groups = test_with_diag.group_by("icd_group").agg(pl.len().alias("n")).sort("n", descending=True).head(20)
+    groups = test_with_diag.group_by("icd_group").agg(pl.len().alias("n")).sort("n", descending=True).head(50)
     test_hadm_np = test["hadm_id"].to_numpy()
     ep_starts, ep_ends = _episode_bounds(test_ds)
     ep_hadm = test_hadm_np[ep_starts]

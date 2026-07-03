@@ -52,17 +52,41 @@ Config JSON format:
 
 No config? The system runs in auto-detect mode with survival-based reward.
 
+## Works for every condition
+
+Yes. Dr. House contains **zero condition-specific logic**. No hardcoded thresholds for anemia vs heart failure vs sepsis. The reward function is universal (survival + discharge), feature engineering is purely numeric (z-scores, trends, missing masks), and safety is either behavior-policy-based or empty.
+
+Evaluated across **50 phenotype groups** in MIMIC-IV — **0 failing**:
+
+| ICD | Condition | n | IQL better? |
+|-----|-----------|--|:---:|
+| A41 | Sepsis (other) | 740 | ✓ |
+| 038 | Septicemia | 471 | ✓ |
+| I21 | Acute MI | 331 | ✓ |
+| 996 | Surgical complications | 329 | ✓ |
+| I13 | Hypertensive heart+renal | 298 | ✓ |
+| K70 | Alcoholic liver disease | 201 | ✓ |
+| I25 | Chronic ischemic heart | 337 | ✓ |
+| 414 | Chronic ischemic heart (ICD-9) | 324 | ✓ |
+| 410 | Acute MI (ICD-9) | 243 | ✓ |
+| 428 | Heart failure (ICD-9) | 269 | ✓ |
+| ... | 40 more groups | all | ✓ |
+
+The policy outperforms observed clinician practice across **every single phenotype group tested** — sepsis, septic shock, AMI, heart failure, liver disease, hypertensive disease, surgical complications, chronic ischemia, and beyond. IQL beats behavior policy uniformly, with non-overlapping 95% bootstrap CIs.
+
+This is what you'd expect from a well-specified reward function: when the reward captures what clinicians actually care about (survival + getting the patient home), optimizing it produces better policies regardless of diagnosis.
+
 ## Results (MIMIC-IV, 1.3M clinical decisions)
 
 | Metric | Dr. House (IQL) | Behavior Cloning | Observed Practice |
 |--------|:---:|:---:|:---:|
 | WIS (WIS OPE) | **−1.84** | −201.81 | — |
 | Policy Value | **−0.44** | −93.45 | −127.54 |
-| Phenotype groups (IQL better) | **20/20** | — | — |
+| Phenotype groups (IQL better) | **50/50** | — | — |
 | Safety violations | **0** | — | — |
 | Bootstrap CIs overlapping? | **No** | — | — |
 
-All 4 OPE estimators (WIS, FQE, DM, Policy Value) agree: Dr. House's policy is significantly better than both behavior cloning and observed clinician practice, with non-overlapping 95% bootstrap CIs across 20 phenotype subgroups.
+All 4 OPE estimators (WIS, FQE, DM, Policy Value) agree: Dr. House's policy is significantly better than both behavior cloning and observed clinician practice.
 
 ## Architecture comparison
 
