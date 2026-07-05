@@ -1,29 +1,11 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "rl-healthcare-actions"
-version = "0.1.0"
-requires-python = ">=3.9"
-dependencies = [
-    "pandas>=2.1",
-    "polars>=0.20",
-    "pyarrow>=14.0",
-    "sqlalchemy>=2.0",
-    "psycopg2-binary>=2.9",
-    "numpy>=1.26",
-    "scipy>=1.12",
-    "torch>=2.2",
-    "pyyaml>=6.0",
-]
-
-[project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.3"]
-
-[tool.ruff]
-line-length = 100
-target-version = "py39"
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "N", "W", "UP"]
-ignore = ["E501"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
+version = "1.0.0"
+description = "Offline RL for healthcare intervention recommendations"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
