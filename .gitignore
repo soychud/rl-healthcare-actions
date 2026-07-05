@@ -1,5 +1,13 @@
-data/
 __pycache__/
-*.pyc
-.pytest_cache/
-.ruff_cache/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+*.parquet
+*.csv
+*.log
+data/models/*.pt
+data/dataset_v1/
+.DS_Store
