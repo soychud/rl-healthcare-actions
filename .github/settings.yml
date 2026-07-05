@@ -1,0 +1,4 @@
+_extends: .github
+repository:
+  description: Offline RL for healthcare intervention recommendations
+  topics: reinforcement-learning, healthcare, ehr, mimic-iv
