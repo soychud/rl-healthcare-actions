@@ -200,4 +200,3 @@ See `src/schema.py` for defaults (MIMIC-IV format).
 ## Data sources
 
 Built on MIMIC-IV (Massachusetts Institute of Technology, Laboratory for Computational Physiology). The same pipeline works with any EHR that maps to the same schema — eICU, AmsterdamUMCdb, your hospital's data.
-# YOLO badge test
